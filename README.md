@@ -2,7 +2,7 @@
 
 ## STEPS:
 1. clone reprository https://github.com/dhananjaygoel/directors-filings
-2. Download db backup from the link https://drive.google.com/file/d/1FjAnA87pAHYLWcXnOYTDnoiTL-nvA5vL/view?usp=sharing
+2. Download db backup from the link https://drive.google.com/file/d/1Vqk9wKFTWdX97DUfTPmXUU88fEztzsdi/view?usp=sharing
 3. Create database and restore the db
 4. update variables present in config.py file based on your db configuration
 ```python
