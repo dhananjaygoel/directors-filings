@@ -7,91 +7,60 @@ from bs4 import BeautifulSoup
 from IPython.display import display
 import mysql.connector, requests, os, os.path
 from mysql.connector import Error, errorcode
-from datetime import datetime
 import sys   
-from sner import Ner
+import nltk
+from datetime import datetime
+from nltk.tag.stanford import StanfordNERTagger
 from config import *
-from nltk.tag import StanfordNERTagger
-# os.environ['CLASSPATH'] = 'stanford-ner-4.0.0/stanford-ner.jar'
+from common import *
+
+import pymysql
+
+current_dir = os.path.abspath(os.path.dirname(__file__))
+st = StanfordNERTagger(current_dir+'/stanford-ner-4.0.0/classifiers/english.all.3class.distsim.crf.ser.gz', current_dir+'/stanford-ner-4.0.0/stanford-ner.jar')
+
+
+#os.environ['CLASSPATH'] = 'stanford-ner-4.0.0/stanford-ner.jar'
 # from nltk.tag import StanfordNERTagger
 # os.getenv('CLASSPATH') = '../Downloads/stanford-postagger.jar'
 # nltk.download()
-st = StanfordNERTagger('stanford-ner-4.0.0/classifiers/english.all.3class.distsim.crf.ser.gz', 'stanford-ner-4.0.0/stanford-ner.jar')
-# print(st.tag('Rami Eid is studying at Stony Brook University in NY'.split()) )
+# st = StanfordNERTagger('stanford-ner-4.0.0/classifiers/english.all.3class.distsim.crf.ser.gz') 
+
+
 sys.setrecursionlimit(1000)
 
-# rootdir = os.getcwd() + '/mnt'
-# for subdir, dirs, files in os.walk(rootdir):
-#     for file in files:
-#         print(dirs,file)
-
-
-def restore_windows_1252_characters(restore_string):
-    """
-        Replace C1 control characters in the Unicode string s by the
-        characters at the corresponding code points in Windows-1252,
-        where possible.
-    """
-    def to_windows_1252(match):
-        try:
-            return bytes([ord(match.group(0))]).decode('windows-1252')
-        except UnicodeDecodeError:
-            # No character at the corresponding code point: remove it.
-            return ''
-        
-    return re.sub(r'[\u0080-\u0099]', to_windows_1252, restore_string)
 try:
-    mydb = mysql.connector.connect(host=host,
-                                         database=database_name,
-                                         user=user,
-                                         password=password,
-                                         port = port)
+    mydb = pymysql.connect(host=host,
+                            database=database_name,
+                            user=user,
+                            password=password,
+                            port = port)
     mycursor = mydb.cursor()
+    mycursor.execute('select cik,id from edgarapp_companycik')
 
-    mycursor.execute("SELECT filingtype, name, MAX(filingdate),cik FROM edgarapp_proxies GROUP BY  cik  ORDER BY name")
+    for cik,cik_id in mycursor.fetchall():
+        
+        mycursor.execute(''' SELECT cik,filingpath,filingdate,name FROM edgarapp_proxies  where cik=%s  and filingdate = (
+            select max(filingdate) from edgarapp_proxies where cik =%s)''',(cik,cik))
+        myresult = mycursor.fetchall()
 
-    myresult = mycursor.fetchall()
+        for cik, filingpath,filingdate, company  in myresult:
 
-    mydb.close()
-
-    
-    for filingtype, company, filingdate,cik in myresult:
-        # with open('/Users/Adarshr/ExarNorth/working.txt', 'a+') as file:
-        #     contents = open('working.txt', 'r').read().splitlines()
-        #     print(contents)
-        #     search_word = company
-        #     print('start searching', search_word)
-        #     if search_word in contents:
-        #         print ("already found directors")
-        #     else:
-        #         print('adding potential filings')
-        if (filingtype == 'DEF 14A') :
-            mydb = mysql.connector.connect(host=host,
-                                         database=database_name,
-                                         user=user,
-                                         password=password,
-                                         port =port)
-            # print(str(company).upper() > 'BOSTON BEER CO INC')
-            mycursor = mydb.cursor()
-            date = str(filingdate)
-            date = date.split(' ')[0]
-            print(company, date)
-            mycursor.execute("SELECT filingpath FROM edgarapp_proxies WHERE cik =%s AND filingdate = %s", [cik, date])
-            # print(name, mycursor.fetchall()[0][0])
-            path = mycursor.fetchall()[0][0]
+            path = filingpath
             parts = path.split('/')
             dateRemove = parts[1][11:len(parts[1])]
             nums = dateRemove.split('.')
             accession = nums[0]
             full_accession = accession.replace('-', '')
+            print(company, filingdate)
             today = datetime.today()
+
+            if True :#str(today.year) == date.split('-')[0]:
+                mycursor.execute("SELECT director FROM edgarapp_directors WHERE cik_director_id = %s", [cik_id])
+                past_director = mycursor.fetchall()
             
-            if str(today.year) == date.split('-')[0] or  str(today.year -1) == date.split('-')[0]:
-                mycursor.execute("SELECT director FROM edgarapp_directors WHERE company = %s", [company])
-                a = mycursor.fetchall()
-                print(len(a), company, date)
-                if mycursor.rowcount == 0:
-                    new_html_text = S3_filing_url + path
+                if True:
+                    new_html_text = S3_filing_url + filingpath
                     print('#######################STARTING NEW FILE###############################')
                     print(new_html_text)
 
@@ -202,73 +171,73 @@ try:
 
                         # first grab all the documents
                         filing_documents = master_filings_dict[accession_number]['filing_documents']
+                       
                         # loop through each document
                         for document_id in filing_documents:
-                            if document_id == 'DEF 14A':
-                                # display some info to give status updates.
-                                print('-'*80)
-                                print('Pulling document {} for text normilzation.'.format(document_id))
+                            # display some info to give status updates.
+                            print('-'*80)
+                            print('Pulling document {} for text normilzation.'.format(document_id))
+                            
+                            # grab all the pages for that document
+                            document_pages = filing_documents[document_id]['pages_code']
+
+                            # page length
+                            pages_length = len(filing_documents[document_id]['pages_code'])
+                            
+                            # initalize a dictionary that'll house our repaired html code for each page.
+                            repaired_pages = {}
+                            
+                            # initalize a dictionary that'll house all the normalized text.
+                            normalized_text = {}
+
+                            # loop through each page in that document.
+                            for index, page in enumerate(document_pages):
                                 
-                                # grab all the pages for that document
-                                document_pages = filing_documents[document_id]['pages_code']
+                                # pass it through the parser. NOTE I AM USING THE HTML5 PARSER. YOU MUST USE THIS TO FIX BROKEN TAGS.
+                                page_soup = BeautifulSoup(page,'html5lib')
 
-                                # page length
-                                pages_length = len(filing_documents[document_id]['pages_code'])
+                                # grab all the text, notice I go to the BODY tag to do this
+                                try:
+                                    page_text = page_soup.html.body.get_text(' ',strip = True)
+                                except:
+                                    print('error',page_soup)
+
+                                # print(page_text)
+
+                                # normalize the text, remove messy characters. Additionally, restore missing window characters.
+                                page_text_norm = restore_windows_1252_characters(unicodedata.normalize('NFKD', page_text)) 
                                 
-                                # initalize a dictionary that'll house our repaired html code for each page.
-                                repaired_pages = {}
+                                # Additional cleaning steps, removing double spaces, and new line breaks.
+                                page_text_norm = page_text_norm.replace('  ', ' ').replace('\n',' ')
+
+                                # print(page_text_norm)
+
+                                    # define the page number.
+                                page_number = index + 1
                                 
-                                # initalize a dictionary that'll house all the normalized text.
-                                normalized_text = {}
-
-                                # loop through each page in that document.
-                                for index, page in enumerate(document_pages):
-                                    
-                                    # pass it through the parser. NOTE I AM USING THE HTML5 PARSER. YOU MUST USE THIS TO FIX BROKEN TAGS.
-                                    page_soup = BeautifulSoup(page,'html5lib')
-
-                                    # grab all the text, notice I go to the BODY tag to do this
-                                    try:
-                                        page_text = page_soup.html.body.get_text(' ',strip = True)
-                                    except:
-                                        print(page_soup)
-
-                                    # print(page_text)
-
-                                    # normalize the text, remove messy characters. Additionally, restore missing window characters.
-                                    page_text_norm = restore_windows_1252_characters(unicodedata.normalize('NFKD', page_text)) 
-                                    
-                                    # Additional cleaning steps, removing double spaces, and new line breaks.
-                                    page_text_norm = page_text_norm.replace('  ', ' ').replace('\n',' ')
-
-                                    # print(page_text_norm)
-
-                                     # define the page number.
-                                    page_number = index + 1
-                                    
-                                    # add the normalized text to the list.
-                                    normalized_text[page_number] = page_text_norm
-                                    
-                                    # add the repaired html to the list. Also now we have a page number as the key.
-                                    repaired_pages[page_number] = page_soup
+                                # add the normalized text to the list.
+                                normalized_text[page_number] = page_text_norm
                                 
-                                    # display a status to the user
-                                    # print('Page {} of {} from document {} has had their text normalized.'.format(index + 1, pages_length, document_id))
+                                # add the repaired html to the list. Also now we have a page number as the key.
+                                repaired_pages[page_number] = page_soup
+                            
+                                # display a status to the user
+                                # print('Page {} of {} from document {} has had their text normalized.'.format(index + 1, pages_length, document_id))
 
-                                    # add the normalized text back to the document dictionary
-                                    filing_documents[document_id]['pages_normalized_text'] = normalized_text
-                                    
-                                    # add the repaired html code back to the document dictionary
-                                    filing_documents[document_id]['pages_code'] = repaired_pages
-                                    
-                                    # define the generated page numbers
-                                    gen_page_numbers = list(repaired_pages.keys())
-                                    
-                                    # add the page numbers we have.
-                                    filing_documents[document_id]['pages_numbers_generated'] = gen_page_numbers    
-                                    
-                                # display a status to the user.
-                                print('All the pages from document {} have been normalized.'.format(document_id))
+                                # add the normalized text back to the document dictionary
+                                filing_documents[document_id]['pages_normalized_text'] = normalized_text
+                                
+                                # add the repaired html code back to the document dictionary
+                                filing_documents[document_id]['pages_code'] = repaired_pages
+                                
+                                # define the generated page numbers
+                                gen_page_numbers = list(repaired_pages.keys())
+                                
+                                # add the page numbers we have.
+                                filing_documents[document_id]['pages_numbers_generated'] = gen_page_numbers    
+                                
+                            # display a status to the user.
+                            print('All the pages from document {} have been normalized.'.format(document_id))
 
                         # print(master_filings_dict[accession_number]['filing_documents']['DEF 14A']['pages_code'])
 
@@ -378,8 +347,7 @@ try:
 
                         # first grab all the documents
                         filing_documents = master_filings_dict[accession_number]['filing_documents']
-                        # print(filing_documents['DEF 14A']['pages_code'])
-                        # loop through each document
+                        #print(filing_documents)
                         for document_id in filing_documents:
                             
                             # let's grab the all pages code.
@@ -388,112 +356,119 @@ try:
                              # initalize a dictionary to store all the anchors we find.
                             director_tables_dict = {}
                             done = False
-                            if document_id == 'DEF 14A':
-                                # loop through each page
-                                # print(pages_dict)
-                                for page_num in pages_dict:
-                                    
-                                    # grab the actual text
-                                    page_code = pages_dict[page_num]
-                                    
-                                    # find all the anchors in the page, that have the attribute 'name'
-                                    htmlTags = ['b','p', 'font', 'div', 'a', 'table']
-                                    directors_found = page_code.find_all(htmlTags)
-                                    for element in directors_found:
-                                        matches = ['Director','Compensation']
-                                        matchesOne = ['DIRECTOR','COMPENSATION']
-                                        matchesTwo = ['Directors', 'Compensation']
-                                        matchesThree = ['DIRECTORS','COMPENSATION']
-                                        matchesFour = ['Non-Employee', 'Director']
-                                        matchesFive = ['Trustee', 'Compensation']
-                                        matchesSix = ['TRUSTEE', 'COMPENSATION']
-                    
-                                        if done == False and (all(x in element.text for x in matches) or all(x in element.text for x in matchesTwo) or all(x in element.text for x in matchesThree) or all(x in element.text for x in matchesOne) or all(x in element.text for x in matchesFour) or all(x in element.text for x in matchesFive) or all(x in element.text for x in matchesSix)): 
-                                            # print(filing_documents[document_id]['table_search'][page_num])
-                                            # print(page_code)
-                                            # print(page_num)
-                                            tables = page_code.find_all('table')
-                                            for table in tables:
-                                                if done == False:
-                                                    table_rows = table.find_all('tr')
-                                                    # parse the table, first loop through the rows, then each element, and then parse each element.
-                                                    director_table_unclean = [
-                                                        [element.get_text(strip=True) for element in row.find_all(['td', 'th'])]
-                                                        for row in table_rows
-                                                    ]
-                                                    director_table_cleaned = [
-                                                        [element for element in row if element != None and element != '']
-                                                        for row in director_table_unclean
-                                                    ]
+                            # loop through each page
+                            # print(pages_dict)
+                            for page_num in pages_dict:
+                                
+                                # grab the actual text
+                                page_code = pages_dict[page_num]
+                                
+                                # find all the anchors in the page, that have the attribute 'name'
+                                htmlTags = ['b','p', 'font', 'div', 'a', 'table']
+                                directors_found = page_code.find_all(htmlTags)
+                                for element in directors_found:
+                                    matches = ['Director','Compensation']
+                                    matchesOne = ['DIRECTOR','COMPENSATION']
+                                    matchesTwo = ['Directors', 'Compensation']
+                                    matchesThree = ['DIRECTORS','COMPENSATION']
+                                    matchesFour = ['Non-Employee', 'Director']
+                                    matchesFive = ['Trustee', 'Compensation']
+                                    matchesSix = ['TRUSTEE', 'COMPENSATION']
+                
+                                    if done == False and (all(x in element.text for x in matches) or all(x in element.text for x in matchesTwo) or all(x in element.text for x in matchesThree) or all(x in element.text for x in matchesOne) or all(x in element.text for x in matchesFour) or all(x in element.text for x in matchesFive) or all(x in element.text for x in matchesSix)): 
+                                        # print(filing_documents[document_id]['table_search'][page_num])
+                                        #print(page_code,'page_code')
+                                        #print(page_num,'page_num')
+                                        tables = page_code.find_all('table')
+                                        
+                                        for table in tables:
+                                            if done == False:
+                                                table_rows = table.find_all('tr')
+                                                # parse the table, first loop through the rows, then each element, and then parse each element.
+                                                director_table_unclean = [
+                                                    [element.get_text(strip=True) for element in row.find_all(['td', 'th'])]
+                                                    for row in table_rows
+                                                ]
+                                                director_table_cleaned = [
+                                                    [element for element in row if element != None and element != '']
+                                                    for row in director_table_unclean
+                                                ]
 
-                                                    director_table_cleaned = [i for i in director_table_cleaned if i != []]
+                                                director_table_cleaned = [i for i in director_table_cleaned if i != []]
 
-                                                    director_table_cleaned = [[j.lower() for j in i] for i in director_table_cleaned]
+                                                director_table_cleaned = [[j.lower() for j in i] for i in director_table_cleaned]
 
-                                                    director_table_cleaned = [[j for j in i if j != '\u200b'] for i in director_table_cleaned]
-                                                    
-                                                    director_table_cleaned = [[j.replace('\xa0', " ") for j in i] for i in director_table_cleaned]
+                                                director_table_cleaned = [[j for j in i if j != '\u200b'] for i in director_table_cleaned]
+                                                
+                                                director_table_cleaned = [[j.replace('\xa0', " ") for j in i] for i in director_table_cleaned]
 
-                                                    director_table_cleaned = [[j.replace('<br>', "") for j in i] for i in director_table_cleaned]
+                                                director_table_cleaned = [[j.replace('<br>', "") for j in i] for i in director_table_cleaned]
 
 
-                                                    director_table_cleaned = [i for i in director_table_cleaned if i != []]
+                                                director_table_cleaned = [i for i in director_table_cleaned if i != []]
 
-                                                    # print(director_table_cleaned)
+                                                #print(director_table_cleaned)
 
-                                                    director_table_cleaned = [i for i in director_table_cleaned if len(i) > 1]
-                                                    
-                                                    directors = []
-                                                    
-                                                    # print(director_table_cleaned)
-                                                    try:
-                                                        if any('beneficial owner' in s for s in director_table_cleaned[0]) or any('fees earned' in s for s in director_table_cleaned[0]) or any("name" in s and len(s) < 8 for s in director_table_cleaned[0]) or any('total' in s for s in director_table_cleaned[0]) or any('trust' in s for s in director_table_cleaned[0]) or any('director' in s for s in director_table_cleaned[0]) and not any('year' in s for s in director_table_cleaned[0]):
-                                                            # print(director_table_cleaned[0])
-                                                            if (any("stock" in s for s in director_table_cleaned[0]) or any("awards" in s for s in director_table_cleaned[0]) or any("fees earned" or "feesearned" in s for s in director_table_cleaned[0]) or any("aggregate" in s for s in director_table_cleaned[0]) ) and not (any('outstanding' in s for s in director_table_cleaned[0]) or any('unearned' in s for s in director_table_cleaned[0]) or any('executive' in s for s in director_table_cleaned[0]) or any('principal' in s for s in director_table_cleaned[0])):
-                                                                # print(director_table_cleaned)
-                                                                # print('starting', done)
-                                                                for element in director_table_cleaned:
-                                                                    directors.append(element[0])
-                                                                # print(directors)
-                                                                directors = [s.replace(')', '') for s in directors]
-                                                                directors = [s.replace('(', '') for s in directors]
-                                                                directors = [s.replace(',', '') for s in directors]
-                                                                directors = [s.replace('jr.', '') for s in directors]
-                                                                directors = [''.join(i for i in s if not i.isdigit()) for s in directors]
-                                                                directors = [s.title() for s in directors]
-                                                                # print(directors)
-                                                                cleaned = []
-                                                                peoples = []
-                                                                for element in directors:
-                                                                    tags = st.get_entities(element)
-                                                                    # print(tokens, tags)
-                                                                    if all(tag[1] == 'PERSON' for tag in tags):
-                                                                        name = ' '.join(tag[0] for tag in tags if tag[0][len(tag[0]) - 1] != '.' and (tag[0] != 'I') and tag[0] != 'Ii' and tag[0] != 'Iii' and tag[0] != 'Namea')
-                                                                        cleaned.append(name)
-                                                                if len(cleaned) > 2:
-                                                                    done = True
-                                                                    print('directors', done)
-                                                                    print(cleaned)
-                                                                    que = "CREATE TABLE IF NOT EXISTS edgarapp_directors (id int auto_increment primary key, company text, director text, age int, bio text)"
+                                                director_table_cleaned = [i for i in director_table_cleaned if len(i) > 1]
+                                                
+                                                directors = []
+                                                
+                                                #print(director_table_cleaned)
+                                                try:
+                                                    if any('beneficial owner' in s for s in director_table_cleaned[0]) or any('fees earned' in s for s in director_table_cleaned[0]) or any("name" in s and len(s) < 8 for s in director_table_cleaned[0]) or any('total' in s for s in director_table_cleaned[0]) or any('trust' in s for s in director_table_cleaned[0]) or any('director' in s for s in director_table_cleaned[0]) and not any('year' in s for s in director_table_cleaned[0]):
+                                                        # print(director_table_cleaned[0])
+                                                        if (any("stock" in s for s in director_table_cleaned[0]) or any("awards" in s for s in director_table_cleaned[0]) or any("fees earned" or "feesearned" in s for s in director_table_cleaned[0]) or any("aggregate" in s for s in director_table_cleaned[0]) ) and not (any('outstanding' in s for s in director_table_cleaned[0]) or any('unearned' in s for s in director_table_cleaned[0]) or any('executive' in s for s in director_table_cleaned[0]) or any('principal' in s for s in director_table_cleaned[0])):
+                                                            # print(director_table_cleaned)
+                                                            # print('starting', done)
+                                                            for element in director_table_cleaned:
+                                                                directors.append(element[0])
+                                                            # print(directors)
+                                                            directors = [s.replace(')', '') for s in directors]
+                                                            directors = [s.replace('(', '') for s in directors]
+                                                            directors = [s.replace(',', '') for s in directors]
+                                                            directors = [s.replace('jr.', '') for s in directors]
+                                                            directors = [''.join(i for i in s if not i.isdigit()) for s in directors]
+                                                            directors = [s.title() for s in directors]
+                                                            # print(directors)
+                                                            cleaned = []
+                                                            peoples = []
+                                                            for element in directors:
+                                                                name = extract_names(element)
+                                                                # print(tokens, tags)
+                                                                #if all(tag[1] == 'PERSON' for tag in tags):
+                                                                #    name = ' '.join(tag[0] for tag in tags if tag[0][len(tag[0]) - 1] != '.' and (tag[0] != 'I') and tag[0] != 'Ii' and tag[0] != 'Iii' and tag[0] != 'Namea')
+                                                                if len(name)!=0:
+                                                                    cleaned.append(name)
+                                                            if len(cleaned) > 2:
+                                                                done = True
+                                                                print('directors', done)
+                                                                print(cleaned)
+                                                                que = f"select * from  edgarapp_directors where cik_director_id= {cik_id}"
+                                                                mycursor.execute(que)
+                                                                if len(mycursor.fetchall()) !=0 and len(cleaned) != 0 :
+                                                                    que = f"delete from  edgarapp_directors where cik_director_id= {cik_id}"
                                                                     mycursor.execute(que)
-                                                                    for person in cleaned:
-                                                                        data = [company, person]
-                                                                        try:
-                                                                            # print('entering {} into db.'.format(data))
-                                                                            mycursor.execute("INSERT INTO edgarapp_directors (company, director) VALUES (%s, %s)", data)
-                                                                            # print('finished entering')
-                                                                            mydb.commit()
-                                                                        except mysql.connector.Error as e:
-                                                                            print('MySQL error is: {}'.format(e))
-                                                                            mydb.rollback()  
+                                                                    
+
+                                                                for person in cleaned:
+                                                                    data = [company, person,cik_id]
+                                                                    try:
+                                                                        # print('entering {} into db.'.format(data))
+                                                                        mycursor.execute("INSERT INTO edgarapp_directors (company, director,cik_director_id) VALUES (%s, %s,%s)", data)
+                                                                        # print('finished entering')
+                                                                        mydb.commit()
+                                                                    except mysql.connector.Error as e:
+                                                                        print('MySQL error is: {}'.format(e))
+                                                                        mydb.rollback()  
 
 
-                                                    except:
-                                                        l = 3
+                                                except Exception as e:
+                                                    print('exception occured',e)
+                                                    l = 3
                     except RecursionError as e:
                         print('Recursion error, something went wrong with parsing')
                 else:
                     print('directors for {} already stored in database'.format(company))
-            mydb.close()
+            #mydb.close()
 except mysql.connector.Error as e:
     print(e)
